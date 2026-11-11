@@ -1,0 +1,218 @@
+import time
+import json
+import random
+import urllib.request
+import threading
+import os
+from datetime import datetime, timezone
+from flask import Flask
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "render-secure-key-2026")
+
+# --- CONFIGURATION ---
+TELEGRAM_BOT_TOKEN = "9055476591:AAHpG8hvCdU4_1DEnbFrvfJ3mXR0xSX7J7U"
+
+# Unlimited Admin IDs
+UNLIMITED_USER_IDS = ["8842031370", "7891601316", "7406955427"]
+
+# Track active live streaming sessions, user stages, event locks, and synchronized periods
+ACTIVE_LIVE_SESSIONS = {}
+USER_STAGE_TRACKER = {}
+USER_SEMAPHORE = {}
+CURRENT_FB999_PERIOD = 2026111100010596  # Update using /setperiod <number>
+
+@app.route("/")
+def index():
+    return "FB999 Telegram Bot & Live Stream Service is Active!"
+
+def telegram_bot_polling():
+    global CURRENT_FB999_PERIOD
+    offset = 0
+    print(">>> TELEGRAM POLLING WORKER INITIALIZED <<<")
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=35) as response:
+                data = json.loads(response.read().decode())
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        
+                        # Handle button clicks (Callback Queries)
+                        if "callback_query" in update:
+                            cq = update["callback_query"]
+                            cq_id = cq["id"]
+                            chat_id = str(cq["message"]["chat"]["id"])
+                            data_val = cq["data"]
+                            
+                            answer_callback_query(cq_id)
+                            
+                            if data_val in ["win", "loss"]:
+                                handle_button_response(chat_id, data_val)
+                            continue
+
+                        # Handle text messages
+                        message = update.get("message")
+                        if message and "text" in message:
+                            chat_id = str(message["chat"]["id"])
+                            text = message["text"].strip()
+                            text_lower = text.lower()
+                            print(f"--> COMMAND RECEIVED: '{text}' from CHAT ID: {chat_id}")
+                            
+                            if text_lower == "/start":
+                                reply_text = (
+                                    "👋 *Welcome to your Professional Win Go Bot!*\n\n"
+                                    "🔹 `/setperiod <number>` - Sync period with fb999\n"
+                                    "🔹 `/1m` - Get a single synchronized signal\n"
+                                    "🔹 `/live` - Start interactive live stream\n"
+                                    "🔹 `/stop` - End live stream"
+                                )
+                                send_telegram_message(chat_id, reply_text)
+                            elif text_lower.startswith("/setperiod"):
+                                parts = text.split()
+                                if len(parts) > 1 and parts[1].isdigit():
+                                    CURRENT_FB999_PERIOD = int(parts[1])
+                                    send_telegram_message(chat_id, f"✅ *Period synchronized!* Current Period: `{CURRENT_FB999_PERIOD}`")
+                                else:
+                                    send_telegram_message(chat_id, "⚠️ Usage: `/setperiod 2026111100010596`")
+                            elif any(tf in text_lower for tf in ["/1m", "/30s", "/3m", "/5m"]):
+                                tf = text_lower.replace("/", "").upper()
+                                handle_single_signal(chat_id, tf)
+                            elif text_lower == "/live":
+                                start_live_stream(chat_id)
+                            elif text_lower == "/stop":
+                                stop_live_stream(chat_id)
+        except Exception as e:
+            print(f"Polling loop exception: {e}")
+            time.sleep(3)
+
+def send_telegram_message(chat_id, text, reply_markup=None):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+            
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req) as resp:
+            res_data = json.loads(resp.read().decode())
+            if res_data.get("ok"):
+                return res_data["result"].get("message_id")
+    except Exception as e:
+        print(f"Error sending message to {chat_id}: {e}")
+    return None
+
+def answer_callback_query(callback_query_id, text="Recorded!"):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+        payload = json.dumps({"callback_query_id": callback_query_id, "text": text}).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req)
+    except Exception as e:
+        print(f"Error answering callback: {e}")
+
+def generate_signal_text(timeframe="1M", stage=1):
+    global CURRENT_FB999_PERIOD
+    period_str = str(CURRENT_FB999_PERIOD)
+    size = random.choice(["BIG (5-9)", "SMALL (0-4)"])
+    target_num = f"{random.randint(7, 9)} / 9"
+    win_rate = random.randint(84, 97)
+    
+    return (
+        f"📊 *WIN GO NUMBER SIGNAL ({timeframe})*\n\n"
+        f"🔹 Period: `{period_str}`\n"
+        f"📈 Stage Level: Stage {stage} / 6\n"
+        f"🎯 Prediction Range: 🔴 {size}\n"
+        f"🔢 Target Numbers: {target_num}\n"
+        f"🔥 Win Rate: {win_rate}%"
+    )
+
+def get_inline_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Win", "callback_data": "win"},
+                {"text": "❌ Loss", "callback_data": "loss"}
+            ]
+        ]
+    }
+
+def handle_single_signal(chat_id, timeframe):
+    global CURRENT_FB999_PERIOD
+    if chat_id not in USER_STAGE_TRACKER:
+        USER_STAGE_TRACKER[chat_id] = 1
+    
+    stage = USER_STAGE_TRACKER[chat_id]
+    msg = generate_signal_text(timeframe, stage)
+    send_telegram_message(chat_id, msg, reply_markup=get_inline_keyboard())
+    CURRENT_FB999_PERIOD += 1
+
+def handle_button_response(chat_id, result):
+    global CURRENT_FB999_PERIOD
+    if chat_id not in USER_STAGE_TRACKER:
+        USER_STAGE_TRACKER[chat_id] = 1
+
+    if result == "win":
+        USER_STAGE_TRACKER[chat_id] = 1 
+        send_telegram_message(chat_id, "🎉 *Result Recorded: WIN!* Resetting to Stage 1.")
+    else:
+        if USER_STAGE_TRACKER[chat_id] < 6:
+            USER_STAGE_TRACKER[chat_id] += 1
+            send_telegram_message(chat_id, f"⚠️ *Result Recorded: LOSS.* Moving to Stage {USER_STAGE_TRACKER[chat_id]} / 6.")
+        else:
+            send_telegram_message(chat_id, "🛡️ *Max Stage 6 Reached.* Capped securely at Stage 6.")
+
+    # Increment period to match fb999's next sequential round
+    CURRENT_FB999_PERIOD += 1
+
+    # Unblock live loop to drop the next single session cleanly
+    if chat_id in USER_SEMAPHORE:
+        USER_SEMAPHORE[chat_id].set()
+
+def start_live_stream(chat_id):
+    if ACTIVE_LIVE_SESSIONS.get(chat_id, False):
+        send_telegram_message(chat_id, "⚠️ Live stream is already running! Send `/stop` to end.")
+        return
+
+    ACTIVE_LIVE_SESSIONS[chat_id] = True
+    USER_STAGE_TRACKER[chat_id] = 1
+    USER_SEMAPHORE[chat_id] = threading.Event()
+    
+    send_telegram_message(chat_id, "🚀 *Live Stream Started!* Max Stage 6 protection active. Waiting for your Win/Loss click. Send `/stop` to end.")
+
+    def run_stream():
+        while ACTIVE_LIVE_SESSIONS.get(chat_id, False):
+            stage = USER_STAGE_TRACKER.get(chat_id, 1)
+            signal_msg = generate_signal_text("1M", stage)
+            send_telegram_message(chat_id, signal_msg, reply_markup=get_inline_keyboard())
+
+            # Wait indefinitely for manual button click (handled strictly by button callback)
+            USER_SEMAPHORE[chat_id].clear()
+            USER_SEMAPHORE[chat_id].wait(timeout=None)
+
+            if not ACTIVE_LIVE_SESSIONS.get(chat_id, False):
+                break
+
+        ACTIVE_LIVE_SESSIONS[chat_id] = False
+        send_telegram_message(chat_id, "🛑 *Live Stream Stopped.*")
+
+    threading.Thread(target=run_stream, daemon=True).start()
+
+def stop_live_stream(chat_id):
+    if ACTIVE_LIVE_SESSIONS.get(chat_id, False):
+        ACTIVE_LIVE_SESSIONS[chat_id] = False
+        if chat_id in USER_SEMAPHORE:
+            USER_SEMAPHORE[chat_id].set()
+        send_telegram_message(chat_id, "🛑 *Live Stream Stopped Successfully.*")
+    else:
+        send_telegram_message(chat_id, "ℹ️ No active live stream found.")
+
+if __name__ == "__main__":
+    bot_thread = threading.Thread(target=telegram_bot_polling, daemon=True)
+    bot_thread.start()
+    
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
