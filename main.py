@@ -19,6 +19,7 @@ UNLIMITED_USER_IDS = ["8842031370", "7891601316"]
 # 2. Daily Limited Users (60 signals per day)
 LIMITED_USERS = {
     "8882241036": {"limit": 60, "used": 0, "last_date": str(date.today())}
+    "7406955427": {"limit": 60, "used": 0, "last_date": str(date.today())}
 }
 
 # 3. SPECIAL USER IDs (40 Wins Access)
